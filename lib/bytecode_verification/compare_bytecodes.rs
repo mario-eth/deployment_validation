@@ -1,5 +1,5 @@
-use ethers::abi;
-use ethers::solc::artifacts::BytecodeHash;
+use alloy::dyn_abi::JsonAbiExt;
+use foundry_compilers::artifacts::BytecodeHash;
 use tracing::{debug, info};
 
 use crate::bytecode_verification::parse_json::ProjectInfo;
@@ -166,7 +166,10 @@ impl CompareBytecode {
         if factory_mode {
             let mut other_bytecodes: Vec<Vec<u8>> = vec![];
             for other_bytecode in &project_info.other_bytecodes {
-                other_bytecodes.push(hex::decode(other_bytecode.trim_start_matches("0x")).unwrap());
+                // TODO: bytecode may contain placehodlers for linked libraries (e.g., "__$a8edeab004e053fbdc8344e3d53a225696$__"). handle this
+                if let Ok(hex_bytecode) = hex::decode(other_bytecode.trim_start_matches("0x")) {
+                    other_bytecodes.push(hex_bytecode);
+                }
             }
             ignore_subcontracts_metadata(
                 &other_bytecodes,
@@ -246,7 +249,9 @@ impl CompareInitCode {
         if factory_mode {
             let mut other_bytecodes: Vec<Vec<u8>> = vec![];
             for other_bytecode in &project_info.other_bytecodes {
-                other_bytecodes.push(hex::decode(other_bytecode.trim_start_matches("0x")).unwrap());
+                if let Ok(hex_bytecode) = hex::decode(other_bytecode.trim_start_matches("0x")) {
+                    other_bytecodes.push(hex_bytecode);
+                }
             }
             ignore_subcontracts_metadata(
                 &other_bytecodes,
@@ -263,28 +268,28 @@ impl CompareInitCode {
             return Self::no_match();
         }
 
-        if project_info.constructor_args.is_empty() {
+        if project_info.constructor.is_none() {
             return CompareInitCode { matched: true };
         }
 
         // decode constructor arguments
-        let argument_types: Vec<_> = project_info
-            .constructor_args
-            .iter()
-            .map(|arg| arg.kind.clone())
-            .collect();
-        let decoded_args = abi::decode(&argument_types, &init_bytecode[compiled_init_code.len()..])
+        let decoded_args = project_info
+            .constructor
+            .as_ref()
+            .unwrap()
+            .abi_decode_input(&init_bytecode[compiled_init_code.len()..], true)
             .expect("Unable to decode the constructor arguments.");
 
-        if decoded_args.len() != project_info.constructor_args.len() {
-            return Self::no_match();
-        }
-
         for (arg, value) in project_info.constructor_args.iter_mut().zip(decoded_args) {
-            let encoded_value = abi::encode_packed(&[value]).unwrap();
+            let encoded_value = value.abi_encode_packed();
             let formatted_value = format!("0x{}", hex::encode(&encoded_value));
 
+            let sol_type = value.as_type().unwrap_or_else(|| {
+                panic!("Unable to find constructor argument type for {}", arg.name)
+            });
+
             arg.value = formatted_value;
+            arg.type_string = sol_type.sol_type_name().to_string()
         }
 
         // Byte offset -> Relevant
@@ -295,7 +300,7 @@ impl CompareInitCode {
 #[cfg(test)]
 mod tests {
     use crate::types::ConstructorArg;
-    use ethers::abi::ParamType;
+    use alloy::json_abi::{Constructor, Param, StateMutability};
     use semver::Version;
     use std::collections::HashMap;
 
@@ -314,6 +319,7 @@ mod tests {
             cbor_metadata: None,
             immutables: Vec::<Immutable>::new(),
             constructor_args: Vec::<ConstructorArg>::new(),
+            constructor: None,
             events: vec![],
             other_bytecodes: vec![],
             types: HashMap::new(),
@@ -337,6 +343,7 @@ mod tests {
             cbor_metadata: None,
             immutables: Vec::<Immutable>::new(),
             constructor_args: Vec::<ConstructorArg>::new(),
+            constructor: None,
             events: vec![],
             other_bytecodes: vec![],
             types: HashMap::new(),
@@ -362,17 +369,25 @@ mod tests {
         let constructor_args = vec![
             ConstructorArg {
                 name: "arg1".to_string(),
-                kind: ParamType::Address,
-                value: "value1".to_string(),
-                type_string: "type1".to_string(),
+                value: "1".to_string(),
+                type_string: "address".to_string(),
             },
             ConstructorArg {
-                name: "arg1".to_string(),
-                kind: ParamType::Address,
-                value: "value1".to_string(),
-                type_string: "type1".to_string(),
+                name: "arg2".to_string(),
+                value: "2".to_string(),
+                type_string: "address".to_string(),
             },
         ];
+
+        let constructor_inputs: Vec<Param> = vec![
+            Param::parse("address arg1").unwrap(),
+            Param::parse("address arg2").unwrap(),
+        ];
+
+        let constructor = Constructor {
+            inputs: constructor_inputs,
+            state_mutability: StateMutability::NonPayable,
+        };
 
         let mut p = ProjectInfo {
             compiled_bytecode,
@@ -383,6 +398,7 @@ mod tests {
             cbor_metadata: None,
             immutables: vec![],
             constructor_args,
+            constructor: Some(constructor),
             events: vec![],
             other_bytecodes: vec![],
             types: HashMap::new(),
