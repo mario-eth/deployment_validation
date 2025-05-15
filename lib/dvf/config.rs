@@ -884,6 +884,7 @@ impl DVFConfig {
             Some(1) => "eth.blockscout.com".to_string(),
             Some(10) => "optimism.blockscout.com".to_string(),
             Some(100) => "gnosis.blockscout.com".to_string(),
+            Some(130) => "unichain.blockscout.com".to_string(),
             Some(137) => "polygon.blockscout.com".to_string(),
             Some(8453) => "base.blockscout.com".to_string(),
             Some(42161) => "arbitrum.blockscout.com".to_string(),
